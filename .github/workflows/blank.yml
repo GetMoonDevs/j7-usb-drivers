@@ -1,0 +1,63 @@
+name: Mu-Silicium USB driver survey (read-only, no build)
+
+# Save as .github/workflows/usb-diagnostics.yml, then Actions -> Run workflow.
+# Looks for existing USB host / xHCI / DWC3 code in Mu-Silicium that could be reused
+# for the Exynos 7870 (J7 Neo). Uploads usb-survey.txt as an artifact.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  survey:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Clone Mu-Silicium (no submodules needed for the survey)
+        run: |
+          git clone --depth 1 https://github.com/Project-Silicium/Mu-Silicium.git ms
+          git -C ms rev-parse HEAD
+
+      - name: Survey
+        working-directory: ms
+        run: |
+          mkdir -p ../out
+          O=../out/usb-survey.txt
+          {
+            echo "=== commit: $(git rev-parse HEAD) ==="
+
+            echo; echo "=== 1. Driver folders with USB-ish names ==="
+            find . -not -path './.git/*' -type d \
+              | grep -iE 'usb|xhci|dwc|dwusb|ehci|otg|phy' | sort
+
+            echo; echo "=== 2. INF files that mention USB / XHCI / DWC ==="
+            grep -rliE 'xhci|dwc3|dwusb|usbhc|usb2hc|usbbus|usbkb|usbmouse|usbmass|nondiscoverable' \
+              --include='*.inf' --include='*.dsc' --include='*.dsc.inc' --include='*.fdf' --include='*.inc' . \
+              | grep -v '^./Mu_Basecore' | grep -v '^./Common' | sort
+
+            echo; echo "=== 3. Is USB enabled in the Exynos 7870 platform files? ==="
+            for d in Platforms/Samsung/gtaxlltePkg Silicon/Samsung/S5E7870Pkg Platforms/Samsung/S5E7870Pkg; do
+              [ -d "$d" ] && { echo "--- $d"; grep -rniE 'usb|xhci|dwc' "$d" || echo "(no USB lines)"; }
+            done
+
+            echo; echo "=== 4. Samsung drivers available ==="
+            ls Silicon/Samsung 2>/dev/null
+            ls Silicon/Samsung/*/Drivers 2>/dev/null | sort -u | head -100
+
+            echo; echo "=== 5. Silicium common drivers ==="
+            find Silicon/Silicium -maxdepth 3 -type d -path '*Drivers*' 2>/dev/null | sort | head -100
+
+            echo; echo "=== 6. PHY / clock / I2C / PMIC drivers (needed to power USB) ==="
+            find Silicon -type d -iname '*Phy*' -o -type d -iname '*Pmic*' -o -type d -iname '*I2c*' -o -type d -iname '*Clock*' 2>/dev/null | sort
+
+            echo; echo "=== 7. Which platforms already use a DWC3 / XHCI driver (count by SoC folder) ==="
+            grep -rliE 'xhci|dwc3' --include='*.dsc' --include='*.inc' --include='*.inf' . \
+              | grep -v '^./Mu_Basecore' | grep -v '^./Common' | awk -F/ '{print $2"/"$3"/"$4}' | sort | uniq -c | sort -rn | head -40
+          } > "$O" 2>&1
+          wc -l "$O"
+          head -120 "$O"
+
+      - name: Upload survey
+        uses: actions/upload-artifact@v4
+        with:
+          name: usb-survey
+          path: out/usb-survey.txt
