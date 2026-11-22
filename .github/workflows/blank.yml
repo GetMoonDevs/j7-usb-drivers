@@ -1,8 +1,7 @@
-name: Mu-Silicium USB driver survey (read-only, no build)
+name: Mu-Silicium USB survey part 2 (prints the actual USB driver files, no build)
 
-# Save as .github/workflows/usb-diagnostics.yml, then Actions -> Run workflow.
-# Looks for existing USB host / xHCI / DWC3 code in Mu-Silicium that could be reused
-# for the Exynos 7870 (J7 Neo). Uploads usb-survey.txt as an artifact.
+# Save as .github/workflows/usb-survey-2.yml, then Actions -> Run workflow.
+# Read-only. Uploads usb-survey-2.txt.
 
 on:
   workflow_dispatch:
@@ -12,52 +11,60 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Clone Mu-Silicium (no submodules needed for the survey)
-        run: |
-          git clone --depth 1 https://github.com/Project-Silicium/Mu-Silicium.git ms
-          git -C ms rev-parse HEAD
+      - name: Clone Mu-Silicium
+        run: git clone --depth 1 https://github.com/Project-Silicium/Mu-Silicium.git ms
 
-      - name: Survey
+      - name: Dump USB-related files
         working-directory: ms
         run: |
           mkdir -p ../out
-          O=../out/usb-survey.txt
+          O=../out/usb-survey-2.txt
+          show() {  # show FILE [MAXLINES]
+            [ -f "$1" ] || return 0
+            echo; echo "################ $1  ($(wc -l < "$1") lines)"
+            head -n "${2:-250}" "$1"
+          }
           {
             echo "=== commit: $(git rev-parse HEAD) ==="
 
-            echo; echo "=== 1. Driver folders with USB-ish names ==="
-            find . -not -path './.git/*' -type d \
-              | grep -iE 'usb|xhci|dwc|dwusb|ehci|otg|phy' | sort
-
-            echo; echo "=== 2. INF files that mention USB / XHCI / DWC ==="
-            grep -rliE 'xhci|dwc3|dwusb|usbhc|usb2hc|usbbus|usbkb|usbmouse|usbmass|nondiscoverable' \
-              --include='*.inf' --include='*.dsc' --include='*.dsc.inc' --include='*.fdf' --include='*.inc' . \
-              | grep -v '^./Mu_Basecore' | grep -v '^./Common' | sort
-
-            echo; echo "=== 3. Is USB enabled in the Exynos 7870 platform files? ==="
-            for d in Platforms/Samsung/gtaxlltePkg Silicon/Samsung/S5E7870Pkg Platforms/Samsung/S5E7870Pkg; do
-              [ -d "$d" ] && { echo "--- $d"; grep -rniE 'usb|xhci|dwc' "$d" || echo "(no USB lines)"; }
+            echo; echo "=== A. Files in the Samsung USB function driver and platform libs ==="
+            for d in Silicon/Samsung/SamsungPkg/Drivers/UsbfnDwc3Dxe \
+                     Silicon/Samsung/S5E7885Pkg/Library/PlatformUsbfnLib \
+                     Silicon/Samsung/S5E9830Pkg/Library/PlatformUsbfnLib \
+                     Silicon/Samsung/SamsungNullPkg/Library/PlatformUsbfnLibNull; do
+              echo "--- $d"; ls -la "$d" 2>/dev/null
             done
 
-            echo; echo "=== 4. Samsung drivers available ==="
-            ls Silicon/Samsung 2>/dev/null
-            ls Silicon/Samsung/*/Drivers 2>/dev/null | sort -u | head -100
+            echo; echo "=== B. Who uses PlatformUsbfnLib / UsbfnDwc3Dxe (dsc/inc/inf/fdf) ==="
+            grep -rnE 'PlatformUsbfnLib|UsbfnDwc3Dxe|UsbfnIo|UsbDevice|UsbMass' \
+              --include='*.dsc' --include='*.inc' --include='*.inf' --include='*.fdf' . \
+              | grep -v '^./Mu_Basecore' | grep -v '^./Common' | head -80
 
-            echo; echo "=== 5. Silicium common drivers ==="
-            find Silicon/Silicium -maxdepth 3 -type d -path '*Drivers*' 2>/dev/null | sort | head -100
+            echo; echo "=== C. Where the boot menu entries 'USB Storage' / 'FFU Mode' come from ==="
+            grep -rnE 'USB Storage|FFU Mode|Mass ?Storage' --include='*.c' --include='*.h' --include='*.inf' --include='*.uni' . \
+              | grep -v '^./Mu_Basecore' | head -40
 
-            echo; echo "=== 6. PHY / clock / I2C / PMIC drivers (needed to power USB) ==="
-            find Silicon -type d -iname '*Phy*' -o -type d -iname '*Pmic*' -o -type d -iname '*I2c*' -o -type d -iname '*Clock*' 2>/dev/null | sort
+            echo; echo "=== D. a10 (Exynos 7884, same family) USB lines in its DXE/APRIORI/DSC ==="
+            grep -rniE 'usb|xhci|dwc' Platforms/Samsung/a10Pkg | head -60
+            echo; echo "--- S5E7885Pkg dsc/inc lines about USB"
+            grep -rniE 'usb|dwc' Silicon/Samsung/S5E7885Pkg --include='*.inc' --include='*.dsc' --include='*.dec' --include='*.inf' | head -60
 
-            echo; echo "=== 7. Which platforms already use a DWC3 / XHCI driver (count by SoC folder) ==="
-            grep -rliE 'xhci|dwc3' --include='*.dsc' --include='*.inc' --include='*.inf' . \
-              | grep -v '^./Mu_Basecore' | grep -v '^./Common' | awk -F/ '{print $2"/"$3"/"$4}' | sort | uniq -c | sort -rn | head -40
+            echo; echo "=== E. How a Samsung (Snapdragon) phone enables USB HOST in DXE.inc ==="
+            grep -niE 'usb|xhci' Platforms/Samsung/r0qPkg/Include/DXE.inc Platforms/Samsung/r0qPkg/Include/APRIORI.inc
+
+            echo; echo "=== F. The Exynos 7870 SoC package ==="
+            find Silicon/Samsung/S5E7870Pkg -type f | head -80
+
+            show Silicon/Samsung/S5E7870Pkg/S5E7870Pkg.dsc.inc 200
+            show Silicon/Samsung/SamsungPkg/SamsungPkg.dsc.inc 200
+            for f in Silicon/Samsung/SamsungPkg/Drivers/UsbfnDwc3Dxe/*.inf \
+                     Silicon/Samsung/SamsungPkg/Drivers/UsbfnDwc3Dxe/*.h; do show "$f" 200; done
+            for f in Silicon/Samsung/S5E7885Pkg/Library/PlatformUsbfnLib/*; do show "$f" 300; done
           } > "$O" 2>&1
-          wc -l "$O"
-          head -120 "$O"
+          wc -lc "$O"
 
-      - name: Upload survey
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: usb-survey
-          path: out/usb-survey.txt
+          name: usb-survey-2
+          path: out/usb-survey-2.txt
