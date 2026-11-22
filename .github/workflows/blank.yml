@@ -1,7 +1,4 @@
-name: Mu-Silicium USB survey part 2 (prints the actual USB driver files, no build)
-
-# Save as .github/workflows/usb-survey-2.yml, then Actions -> Run workflow.
-# Read-only. Uploads usb-survey-2.txt.
+name: USB survey 3 (read-only)
 
 on:
   workflow_dispatch:
@@ -9,62 +6,68 @@ on:
 jobs:
   survey:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
     steps:
-      - name: Clone Mu-Silicium
-        run: git clone --depth 1 https://github.com/Project-Silicium/Mu-Silicium.git ms
-
-      - name: Dump USB-related files
-        working-directory: ms
+      - name: Clone Mu-Silicium with submodules (shallow)
         run: |
-          mkdir -p ../out
-          O=../out/usb-survey-2.txt
-          show() {  # show FILE [MAXLINES]
-            [ -f "$1" ] || return 0
-            echo; echo "################ $1  ($(wc -l < "$1") lines)"
-            head -n "${2:-250}" "$1"
-          }
-          {
-            echo "=== commit: $(git rev-parse HEAD) ==="
+          git clone --depth 1 --recurse-submodules --shallow-submodules -j8 \
+            https://github.com/Project-Silicium/Mu-Silicium.git mu
+          du -sh mu || true
 
-            echo; echo "=== A. Files in the Samsung USB function driver and platform libs ==="
-            for d in Silicon/Samsung/SamsungPkg/Drivers/UsbfnDwc3Dxe \
-                     Silicon/Samsung/S5E7885Pkg/Library/PlatformUsbfnLib \
-                     Silicon/Samsung/S5E9830Pkg/Library/PlatformUsbfnLib \
-                     Silicon/Samsung/SamsungNullPkg/Library/PlatformUsbfnLibNull; do
-              echo "--- $d"; ls -la "$d" 2>/dev/null
-            done
+      - name: Clone mainline Linux (sparse, only what we need)
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/torvalds/linux.git linux
+          cd linux
+          git sparse-checkout set drivers/clk/samsung arch/arm64/boot/dts/exynos include/dt-bindings/clock drivers/usb/dwc3 drivers/phy/samsung
 
-            echo; echo "=== B. Who uses PlatformUsbfnLib / UsbfnDwc3Dxe (dsc/inc/inf/fdf) ==="
-            grep -rnE 'PlatformUsbfnLib|UsbfnDwc3Dxe|UsbfnIo|UsbDevice|UsbMass' \
-              --include='*.dsc' --include='*.inc' --include='*.inf' --include='*.fdf' . \
-              | grep -v '^./Mu_Basecore' | grep -v '^./Common' | head -80
+      - name: Collect findings
+        run: |
+          OUT=usb-survey-3.txt
+          : > $OUT
+          sec() { printf '\n\n===== %s =====\n' "$1" >> $OUT; }
 
-            echo; echo "=== C. Where the boot menu entries 'USB Storage' / 'FFU Mode' come from ==="
-            grep -rnE 'USB Storage|FFU Mode|Mass ?Storage' --include='*.c' --include='*.h' --include='*.inf' --include='*.uni' . \
-              | grep -v '^./Mu_Basecore' | head -40
+          sec "1. Xhci / NonDiscoverable / PCI-emulation drivers in the whole tree"
+          find mu -type d \( -iname '*xhci*' -o -iname '*NonDiscoverable*' -o -iname '*PciEmulation*' -o -iname '*Dwc3*' \) -not -path '*/.git/*' >> $OUT
 
-            echo; echo "=== D. a10 (Exynos 7884, same family) USB lines in its DXE/APRIORI/DSC ==="
-            grep -rniE 'usb|xhci|dwc' Platforms/Samsung/a10Pkg | head -60
-            echo; echo "--- S5E7885Pkg dsc/inc lines about USB"
-            grep -rniE 'usb|dwc' Silicon/Samsung/S5E7885Pkg --include='*.inc' --include='*.dsc' --include='*.dec' --include='*.inf' | head -60
+          sec "2. XhciDxe / NonDiscoverableDeviceDxe inf files and their MODULE_TYPE"
+          for f in $(find mu -name 'XhciDxe.inf' -o -name 'NonDiscoverableDeviceDxe.inf' -o -name 'XhciPciEmulation*.inf' -not -path '*/.git/*'); do
+            echo "--- $f"; sed -n '1,60p' "$f" >> $OUT
+          done
 
-            echo; echo "=== E. How a Samsung (Snapdragon) phone enables USB HOST in DXE.inc ==="
-            grep -niE 'usb|xhci' Platforms/Samsung/r0qPkg/Include/DXE.inc Platforms/Samsung/r0qPkg/Include/APRIORI.inc
+          sec "3. NonDiscoverableDevice protocol header"
+          find mu -name 'NonDiscoverableDevice.h' -not -path '*/.git/*' -exec sh -c 'echo "--- $1"; cat "$1"' _ {} \; >> $OUT
 
-            echo; echo "=== F. The Exynos 7870 SoC package ==="
-            find Silicon/Samsung/S5E7870Pkg -type f | head -80
+          sec "4. How other platform code registers a non-discoverable XHCI (grep)"
+          grep -rIn --include='*.c' --include='*.h' --include='*.inf' -E 'NonDiscoverableDeviceRegister|NonDiscoverableDeviceTypeXhci|NON_DISCOVERABLE_DEVICE_TYPE' mu 2>/dev/null | head -n 60 >> $OUT
 
-            show Silicon/Samsung/S5E7870Pkg/S5E7870Pkg.dsc.inc 200
-            show Silicon/Samsung/SamsungPkg/SamsungPkg.dsc.inc 200
-            for f in Silicon/Samsung/SamsungPkg/Drivers/UsbfnDwc3Dxe/*.inf \
-                     Silicon/Samsung/SamsungPkg/Drivers/UsbfnDwc3Dxe/*.h; do show "$f" 200; done
-            for f in Silicon/Samsung/S5E7885Pkg/Library/PlatformUsbfnLib/*; do show "$f" 300; done
-          } > "$O" 2>&1
-          wc -lc "$O"
+          sec "5. S5E7870Pkg tree"
+          find mu/Silicon/Samsung/S5E7870Pkg -type f | sort >> $OUT
+
+          sec "6. S5E7870 I2C / GPIO / PMIC related libs"
+          find mu/Silicon/Samsung mu/Platforms/Samsung/gtaxlltePkg -type f \( -iname '*i2c*' -o -iname '*pmic*' -o -iname '*speedy*' -o -iname '*muic*' \) | sort >> $OUT
+
+          sec "7. DXE.inc / FDF of gtaxllte (what is loaded)"
+          find mu/Platforms/Samsung/gtaxlltePkg -type f \( -name '*.fdf' -o -name '*.dsc*' -o -name '*.inc' \) -exec sh -c 'echo "--- $1"; cat "$1"' _ {} \; >> $OUT
+
+          sec "8. Linux: exynos7870 clock source (USB related)"
+          ls linux/drivers/clk/samsung | grep -i 7870 >> $OUT
+          grep -n -iE 'usb|fsys' linux/drivers/clk/samsung/clk-exynos7870.c >> $OUT || true
+
+          sec "9. Linux: exynos7870.dtsi USB, PHY, clock, PMU nodes"
+          grep -n -iE -B2 -A22 'usbdrd|usb@13600000|phy@135c0000|cmu_fsys|clock-controller@13' linux/arch/arm64/boot/dts/exynos/exynos7870.dtsi >> $OUT || true
+
+          sec "10. Linux: exynos7870 clock header, USB and FSYS defines"
+          grep -n -iE 'usb|fsys' linux/include/dt-bindings/clock/exynos7870.h >> $OUT || true
+
+          sec "11. Linux: DWC3 Exynos glue (clocks/regulators it enables)"
+          sed -n '1,400p' linux/drivers/usb/dwc3/dwc3-exynos.c >> $OUT || true
+
+          sec "12. Linux: 7870 PHY driver sections (exynos7870)"
+          grep -n -iE 'exynos7870' linux/drivers/phy/samsung/phy-exynos5-usbdrd.c >> $OUT || true
+
+          wc -c $OUT
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: usb-survey-2
-          path: out/usb-survey-2.txt
+          name: usb-survey-3
+          path: usb-survey-3.txt
